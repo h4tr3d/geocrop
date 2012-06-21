@@ -124,6 +124,20 @@ char getSubplate(double lon, double lat, double &subPlateTop,
 }
 
 
+template<typename T>
+struct Point
+{
+    Point() : x(0.0), y(0.0) {}
+    Point(T x, T y) : x(x), y(y) {}
+
+    T x;
+    T y;
+};
+
+typedef Point<double> PointReal;
+typedef Point<int>    PointInt;
+
+
 //
 // http://www.gdal.org/gdal_tutorial_ru.html
 //
@@ -187,8 +201,9 @@ int main(int argc, char **argv)
         rasterXCenter = rasterXSize / 2;
         rasterYCenter = rasterYSize / 2;
 
-        double box[4][2];    // пары координат, обрамляющие номенклатурный лист
-        int    boxPix[4][2]; // координаты пикселей, обрамляющие полезную область
+        vector<PointReal> box(4);    // координаты, обрамляющие номенклатурный лист
+        vector<PointInt>  boxPix(4); // пиксели, обрамляющие номенклатурный лист
+        vector<PointReal> cropPolygon;    // полигон для обрезки, в координатах карты
         string plateName;    // полное имя номенклатурного листа
 
         double geoXCenter;
@@ -258,10 +273,10 @@ int main(int argc, char **argv)
         double right1m  = Nz * 6;
         double left1m   = right1m - 6;
 
-        box[0][0] = top1m; box[0][1] = left1m;
-        box[1][0] = top1m; box[1][1] = right1m;
-        box[2][0] = bottom1m; box[2][1] = left1m;
-        box[3][0] = bottom1m; box[3][1] = right1m;
+        box[0] = PointReal(top1m, left1m);
+        box[1] = PointReal(top1m, right1m);
+        box[2] = PointReal(bottom1m, left1m);
+        box[3] = PointReal(bottom1m, right1m);
 
         for (int i = 0; i < 4; ++i)
         {
@@ -271,17 +286,19 @@ int main(int argc, char **argv)
                 // координата Y, а второй - долгота, которая, по сути, координата X
                 // поэтому перед передачей pj_transform мы должны поставить всё на свои места:
                 //   первой координатой идёт X (lon), второй Y (lat)
-                double u = box[i][1] * DEG_TO_RAD;
-                double v = box[i][0] * DEG_TO_RAD;
+                double u;
+                double v;
+                u = box[i].y * DEG_TO_RAD;
+                v = box[i].x * DEG_TO_RAD;
                 pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
 
-                box[i][0] = u;
-                box[i][1] = v;
+                box[i].x = u;
+                box[i].y = v;
             }
 
             // Пересчитаем координаты в пиксели на картинке
             geoToPixelCoordinate(geoTransform,
-                                 box[i][0], box[i][1], boxPix[i][0], boxPix[i][1]);
+                                 box[i].x, box[i].y, boxPix[i].x, boxPix[i].y);
         }
 
         char plateCh = 'A' + letterNumber - 1;              // Буква листа
@@ -437,10 +454,10 @@ int main(int argc, char **argv)
                    subPlateBottom, subPlateLeft, subPlateBottom, subPlateRight);
 
             // Переведём координаты в исходную систему
-            box[0][0] = subPlateTop;    box[0][1] = subPlateLeft;
-            box[1][0] = subPlateTop;    box[1][1] = subPlateRight;
-            box[2][0] = subPlateBottom; box[2][1] = subPlateLeft;
-            box[3][0] = subPlateBottom; box[3][1] = subPlateRight;
+            box[0] = PointReal(subPlateTop,    subPlateLeft);
+            box[1] = PointReal(subPlateTop,    subPlateRight);
+            box[2] = PointReal(subPlateBottom, subPlateLeft);
+            box[3] = PointReal(subPlateBottom, subPlateRight);
 
             for (int i = 0; i < 4; ++i)
             {
@@ -450,17 +467,17 @@ int main(int argc, char **argv)
                     // координата Y, а второй - долгота, которая, по сути, координата X
                     // поэтому перед передачей pj_transform мы должны поставить всё на свои места:
                     //   первой координатой идёт X (lon), второй Y (lat)
-                    double u = box[i][1] * DEG_TO_RAD;
-                    double v = box[i][0] * DEG_TO_RAD;
+                    double u = box[i].y * DEG_TO_RAD;
+                    double v = box[i].x * DEG_TO_RAD;
                     pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
 
-                    box[i][0] = u;
-                    box[i][1] = v;
+                    box[i].x = u;
+                    box[i].y = v;
                 }
 
                 // Пересчитаем координаты в пиксели на картинке
                 geoToPixelCoordinate(geoTransform,
-                                     box[i][0], box[i][1], boxPix[i][0], boxPix[i][1]);
+                                     box[i].x, box[i].y, boxPix[i].x, boxPix[i].y);
 
                 // TODO: тут можно сделать так, что если это всего лишь часть листа.
                 // например если координаты отрицательные, значит выставить в ноль
@@ -474,31 +491,85 @@ int main(int argc, char **argv)
                "   (%.6f, %.6f)   (%.6f, %.6f)\n"
                "   (%.6f, %.6f)   (%.6f, %.6f)\n",
                plateNameStream.str().c_str(),
-               box[0][0], box[0][1],
-               box[1][0], box[1][1],
-               box[2][0], box[2][1],
-               box[3][0], box[3][1]);
-        printf("Точки растра обрамляющие полезную область %s:\n"
+               box[0].x, box[0].y,
+               box[1].x, box[1].y,
+               box[2].x, box[2].y,
+               box[3].x, box[3].y);
+        printf("Точки растра обрамляющие лист %s:\n"
                "   (%5d, %5d)   (%5d, %5d)\n"
                "   (%5d, %5d)   (%5d, %5d)\n",
                plateNameStream.str().c_str(),
-               boxPix[0][0], boxPix[0][1],
-               boxPix[1][0], boxPix[1][1],
-               boxPix[2][0], boxPix[2][1],
-               boxPix[3][0], boxPix[3][1]);
+               boxPix[0].x, boxPix[0].y,
+               boxPix[1].x, boxPix[1].y,
+               boxPix[2].x, boxPix[2].y,
+               boxPix[3].x, boxPix[3].y);
 
         // Теперь сделаем кроп
         string cutlineFile = genTempFileName() + ".csv";
         ofstream cutline(cutlineFile.c_str());
-        cutline << "WKT,dummy\n" << "\"POLYGON((";
+        cutline << "WKT,dummy\n" << "\"";
+        stringstream cutlinePolygon;
+        
+        cutlinePolygon << "POLYGON((";
 
-        cutline << box[0][0] << " " << box[0][1] << ",";
-        cutline << box[1][0] << " " << box[1][1] << ",";
-        cutline << box[3][0] << " " << box[3][1] << ",";
-        cutline << box[2][0] << " " << box[2][1];
-        cutline << "))\",\n";
+        if (knownScale)
+        {
+            cutlinePolygon << box[0].x << " " << box[0].y << ",";
+            cutlinePolygon << box[1].x << " " << box[1].y << ",";
+            cutlinePolygon << box[3].x << " " << box[3].y << ",";
+            cutlinePolygon << box[2].x << " " << box[2].y;
+        }
+        else
+        {
+            cutlinePolygon << box[0].x << " " << box[0].y << ",";
+
+            // Дополнительные точки обрезки
+            double lat = top1m;
+            for (double lon = left1m + 1; lon < right1m; lon += 1.00)
+            {
+                double u = lon;
+                double v = lat;
+
+                if (pjTar)
+                {
+                    u *= DEG_TO_RAD;
+                    v *= DEG_TO_RAD;
+                    pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
+                }
+
+                cutlinePolygon << u << " " << v << ",";
+            }
+
+            cutlinePolygon << box[1].x << " " << box[1].y << ",";
+            cutlinePolygon << box[3].x << " " << box[3].y << ",";
+
+            // Дополнительные точки обрезки
+            lat = bottom1m;
+            for (double lon = right1m - 1; lon > left1m; lon -= 1.00)
+            {
+                double u = lon;
+                double v = lat;
+
+                if (pjTar)
+                {
+                    u *= DEG_TO_RAD;
+                    v *= DEG_TO_RAD;
+                    pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
+                }
+
+                cutlinePolygon << u << " " << v << ",";
+            }
+
+            cutlinePolygon << box[2].x << " " << box[2].y;
+        }
+
+        cutlinePolygon << "))";
+
+        cutline << cutlinePolygon.str();
+        cutline << "\",\n";
         cutline.close();
         cout << cutlineFile << endl;
+        cout << "Polygon:\n" << cutlinePolygon.str() << endl;
 
         stringstream cropCommand;
         string tmp1 = genTempFileName() + ".tif";
@@ -512,14 +583,6 @@ int main(int argc, char **argv)
                     << " "
                     << ouFileName;
         system(cropCommand.str().c_str());
-#if 0
-        stringstream transparencyCommand;
-        transparencyCommand << "gdalwarp "
-                            << " -srcnodata \"255\" "
-                            << " -dstalpha "
-                            << tmp1 << " " << ouFileName;
-        system(transparencyCommand.str().c_str());
-#endif
 
         unlink(cutlineFile.c_str());
         unlink(tmp1.c_str());

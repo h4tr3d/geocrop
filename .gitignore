@@ -1,3 +1,4 @@
 *.tif
 *.o
 *.creator.user
+geocrop

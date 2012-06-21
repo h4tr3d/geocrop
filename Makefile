@@ -1,6 +1,6 @@
-CC = gcc
-CXX = g++
-LIBS = -lgdal -lproj
+CC ?= gcc
+CXX ?= g++
+LIBS += $(LDFLAGS) -lgdal -lproj
 CXXFLAGS += -ggdb3 -O0
 
 OBJ = main.o
