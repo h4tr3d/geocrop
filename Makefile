@@ -1,7 +1,11 @@
 CC ?= gcc
 CXX ?= g++
-LIBS += $(LDFLAGS) -lgdal -lproj
-CXXFLAGS += -ggdb3 -O0
+
+GDAL_INCLUDE ?= `gdal-config --cflags`
+GDAL_LIB     ?= `gdal-config --libs`
+
+LIBS += $(LDFLAGS) $(GDAL_LIB) -lproj
+CXXFLAGS += -ggdb3 -O0 $(GDAL_INCLUDE)
 
 OBJ = main.o
 EXE = geocrop
