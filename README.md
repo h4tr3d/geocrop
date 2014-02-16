@@ -10,6 +10,7 @@ and
     rgb2pct.py
 tools.
 
+
 Build
 -----
 
@@ -23,18 +24,22 @@ To build:
   - Simple type: `make`
 
 Installation does not required, you can run application in-place. Or you can "install" it manually:
+
     sudo cp ./geocrop /usr/local/bin
 
 On some systems `gdal-config` tool can be not present. You can manually pass params to build:
-   make GDAL_INCLUDE=/usr/include/gdal GDAL_LUB="-L/usr/lib/gdal -lgdal"
+
+    make GDAL_INCLUDE=/usr/include/gdal GDAL_LUB="-L/usr/lib/gdal -lgdal"
+
 
 Use
 ---
 
 Simple run programm without params to get next help:
+
     Tool for automatic crop raster maps
     (C) Alexander 'hatred' Drozdov, 2012. Distributed under GPLv2 terms
-
+    
     Use: ./geocrop <scale> <in geotiff> <croped geotiff>
       Input geotiff MUST be in RGB pallete, so, use pct2rgb.py to convert from indexed
       Output geotiff croped and nodata areas is transparency
