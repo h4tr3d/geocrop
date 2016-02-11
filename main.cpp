@@ -6,24 +6,37 @@
 #include <sstream>
 #include <fstream>
 
+#include <unistd.h>
+
 #include <gdal_priv.h>
 #include <ogr_spatialref.h>
 #include <proj_api.h>
 
 using namespace std;
 
+static const char *s_options = "f:s:";
+
 void usage(char *name)
 {
     cout << "Tool for automatic crop raster maps\n";
     cout << "(C) Alexander 'hatred' Drozdov, 2012. Distributed under GPLv2 terms\n\n";
-    cout << "Use: " << name << " <scale> <in geotiff> <croped geotiff>\n"
+    cout << "Use: " << name << " [args] <in geodata> <croped geodata>\n"
          << "  Input geotiff MUST be in RGB pallete, so, use pct2rgb.py to convert from indexed\n"
          << "  Output geotiff croped and nodata areas is transparency\n"
-         << "  Scale must be:\n"
-         << "    100k     for 1:100 000 plates\n"
-         << "    50k      for 1:50 000 plates\n"
-         << "  1M (1:1 000 000) support by default\n"
-         << "  Any other scales currently not support\n";
+         << "\n"
+         << "  Args:\n"
+         << "  -s SCALE\n"
+         << "     Scale must be:\n"
+         << "     500k     for 1:500 000 plates\n"
+         << "     200k     for 1:200 000 plates\n"
+         << "     100k(*)  for 1:100 000 plates, used by default\n"
+         << "     50k      for 1:50 000 plates\n"
+         << "     25k      for 1:25 000 plates\n"
+         << "     1M (1:1 000 000) support by default\n"
+         << "     Any other scales currently not support\n"
+         << "  -f OUTPUT_FORMAT\n"
+         << "     Any format supported by GDAL. GTiff is default one\n"
+         ;
 
 }
 
@@ -148,6 +161,7 @@ int main(int argc, char **argv)
     string       scale = "100k";
     string       inFileName;
     string       ouFileName;
+    string       ouDriver = "GTiff";
 
     double       geoTransform[6];
     int          rasterXSize = 0;
@@ -155,15 +169,33 @@ int main(int argc, char **argv)
     int          rasterXCenter = 0;
     int          rasterYCenter = 0;
 
-    if (argc != 4)
+    while (true)
+    {
+        int opt = getopt(argc, argv, s_options);
+        if (opt == -1)
+            break;
+        switch (opt) 
+        {
+            case 'f':
+                ouDriver = optarg;
+                break;
+            case 's':
+                scale = optarg;
+                break;
+            default:
+                usage(argv[0]);
+                return 1;
+        }
+    }
+
+    if (optind > argc - 2)
     {
         usage(argv[0]);
         return 1;
     }
 
-    scale = argv[1];
-    inFileName = argv[2];
-    ouFileName = argv[3];
+    inFileName = argv[optind + 0];
+    ouFileName = argv[optind + 1];
 
     GDALAllRegister();
 
@@ -174,23 +206,23 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    cout << "Драйвер: " << dataset->GetDriver()->GetDescription() << "/"
+    cout << "InDriver: " << dataset->GetDriver()->GetDescription() << "/"
          << dataset->GetDriver()->GetMetadata(GDAL_DMD_LONGNAME) << endl;
 
-    cout << "Размер: " << dataset->GetRasterXSize() << "x" << dataset->GetRasterYSize() << "x"
+    cout << "InSize: " << dataset->GetRasterXSize() << "x" << dataset->GetRasterYSize() << "x"
          << dataset->GetRasterCount() << endl;
 
     if (dataset->GetProjectionRef() != 0)
     {
-        cout << "Проекция: " << dataset->GetProjectionRef() << endl;
+        cout << "Projection: " << dataset->GetProjectionRef() << endl;
     }
 
     if (dataset->GetGeoTransform(geoTransform) == CE_None)
     {
-        printf( "Начало координат (%.6f,%.6f)\n",
+        printf( "Coordinate zero (%.6f,%.6f)\n",
                         geoTransform[0], geoTransform[3] );
 
-        printf( "Размер пиксела (%.6f,%.6f)\n",
+        printf( "Pixel size (%.6f,%.6f)\n",
                         geoTransform[1], geoTransform[5] );
 
         //
@@ -211,8 +243,8 @@ int main(int argc, char **argv)
 
         pixelToGeoCoordinate(geoTransform, rasterXCenter, rasterYCenter, geoXCenter, geoYCenter);
 
-        printf("Центр листа: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
-        printf("Координаты центра листа: (%.6f, %.6f)\n", geoXCenter, geoYCenter);
+        printf("Shape center: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
+        printf("Shape center coordinates: (%.6f, %.6f)\n", geoXCenter, geoYCenter);
 
         // проверка обратного преобразования
         //geoToPixelCoordinate(geoTransform, geoXCenter, geoYCenter, rasterXCenter, rasterYCenter);
@@ -248,7 +280,7 @@ int main(int argc, char **argv)
 
             if (pjSrc == 0 || pjTar == 0)
             {
-                cerr << "Не могу настроить проекцию\n";
+                cerr << "Can't setup projection'\n";
                 return 1;
             }
 
@@ -259,7 +291,7 @@ int main(int argc, char **argv)
             geoLonCenter = u * RAD_TO_DEG;
             geoLatCenter = v * RAD_TO_DEG;
 
-            printf("Географические координаты центра листа: (%.6f, %.6f)\n",
+            printf("Shape center coordinates (alt/lon): (%.6f, %.6f)\n",
                    geoLatCenter, geoLonCenter);
         }
 
@@ -308,8 +340,8 @@ int main(int argc, char **argv)
         plateNameStream << plateCh << "-" << plateNum;
         plateName = plateNameStream.str();
 
-        cout << "Лист миллионки: " << plateName << endl;
-        printf("Географические координаты обрамляющие лист %s:\n"
+        cout << "Shape of the 1M map: " << plateName << endl;
+        printf("Shape border coordinates (lat/lon) %s:\n"
                "   (%.6f, %.6f)   (%.6f, %.6f)\n"
                "   (%.6f, %.6f)   (%.6f, %.6f)\n",
                plateNameStream.str().c_str(),
@@ -418,7 +450,7 @@ int main(int argc, char **argv)
                                               subPlateRight);
                 if (!plate50kCh)
                 {
-                    cerr << "Некорректный лист масштаба 1:50000\n";
+                    cerr << "Incorrect page of 1:50000\n";
                     return 1;
                 }
 
@@ -434,7 +466,7 @@ int main(int argc, char **argv)
                                                   subPlateRight);
                     if (!plate25kCh)
                     {
-                        cerr << "Некорректный лист масштаба 1:25000\n";
+                        cerr << "Incorrect page of 1:25000\n";
                         return 1;
                     }
 
@@ -444,9 +476,9 @@ int main(int argc, char **argv)
 
             }
 
-            cout << "Номер листа: " << plateNameStream.str() << endl;
+            cout << "Shape number: " << plateNameStream.str() << endl;
 
-            printf("Географические координаты обрамляющие лист %s:\n"
+            printf("Shape border coordinates (lat/lon) %s:\n"
                    "   (%.6f, %.6f)   (%.6f, %.6f)\n"
                    "   (%.6f, %.6f)   (%.6f, %.6f)\n",
                    plateNameStream.str().c_str(),
@@ -487,7 +519,7 @@ int main(int argc, char **argv)
 
         }
 
-        printf("Координаты обрамляющие лист %s:\n"
+        printf("Shape border coordinates %s:\n"
                "   (%.6f, %.6f)   (%.6f, %.6f)\n"
                "   (%.6f, %.6f)   (%.6f, %.6f)\n",
                plateNameStream.str().c_str(),
@@ -495,7 +527,7 @@ int main(int argc, char **argv)
                box[1].x, box[1].y,
                box[2].x, box[2].y,
                box[3].x, box[3].y);
-        printf("Точки растра обрамляющие лист %s:\n"
+        printf("Shape border in pixels %s:\n"
                "   (%5d, %5d)   (%5d, %5d)\n"
                "   (%5d, %5d)   (%5d, %5d)\n",
                plateNameStream.str().c_str(),
@@ -572,10 +604,11 @@ int main(int argc, char **argv)
         cout << "Polygon:\n" << cutlinePolygon.str() << endl;
 
         stringstream cropCommand;
-        string tmp1 = genTempFileName() + ".tif";
         cropCommand << "gdalwarp "
                     //<< " -wo \"INIT_DEST=255,255,255,0\" "
                     //<< " -dstnodata \"255\" "
+                    << " -of "
+                    << ouDriver
                     << " -dstalpha "
                     << " -crop_to_cutline "
                     << " -cutline  " << cutlineFile << " "
@@ -585,7 +618,6 @@ int main(int argc, char **argv)
         system(cropCommand.str().c_str());
 
         unlink(cutlineFile.c_str());
-        unlink(tmp1.c_str());
     }
 
     return 0;
