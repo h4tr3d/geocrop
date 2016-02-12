@@ -90,6 +90,7 @@ string genTempFileName()
 
 
 //
+// [RU]
 // Определяем подлист листа с указанным обрамлением. Для листов делящихся последовательно на 4
 // Наприме, лист километровки делится на 4 листа полукилометровок, если нам нужно получить
 // обрамление листа полукилометровки, расчитываем оное для километровки, передаём в качестве входных
@@ -251,18 +252,16 @@ int main(int argc, char **argv)
         printf( "Pixel size (%.6f,%.6f)\n",
                         geoTransform[1], geoTransform[5] );
 
-        //
-        // Определяем границы листа
-        //
         rasterXSize = dataset->GetRasterXSize();
         rasterYSize = dataset->GetRasterYSize();
         rasterXCenter = rasterXSize / 2;
         rasterYCenter = rasterYSize / 2;
 
-        vector<PointReal> box(4);    // координаты, обрамляющие номенклатурный лист
-        vector<PointInt>  boxPix(4); // пиксели, обрамляющие номенклатурный лист
-        vector<PointReal> cropPolygon;    // полигон для обрезки, в координатах карты
-        string plateName;    // полное имя номенклатурного листа
+        vector<PointReal> shapeBorderCoordinates(4);
+        vector<PointInt>  shapeBorderPixels(4);
+
+        // Full name for the shape
+        string plateName;
 
         double geoXCenter;
         double geoYCenter;
@@ -276,7 +275,7 @@ int main(int argc, char **argv)
         //geoToPixelCoordinate(geoTransform, geoXCenter, geoYCenter, rasterXCenter, rasterYCenter);
         //printf("Центр листа: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
 
-        // преобразуем описание проекции из WKT в формат PROJ4
+        // Convert WKT projection representation to the PRIJ4 form
         OGRSpatialReference inSrs;
         char *wktRef = (char *) dataset->GetProjectionRef();
         inSrs.importFromWkt(&wktRef);
@@ -286,8 +285,7 @@ int main(int argc, char **argv)
 
         cout << "PROJ4: " << inProj << endl;
 
-        // Нам нужны координаты не в метрической системе, а в географических, что бы выполнить
-        // расчёт по определению листа карты
+        // Recalc metric coordinates to the LonLat for shape detection
         double u = 0.0, v = 0.0;
         projPJ pjSrc = 0;
         projPJ pjTar = 0;
@@ -321,42 +319,42 @@ int main(int argc, char **argv)
                    geoLatCenter, geoLonCenter);
         }
 
-        // определим номенклатурный лист миллионки (1:1000000)
+        // Detect 1M shape
         int Nz = (int)ceil(geoLonCenter / 6);
         int letterNumber = (int)ceil(geoLatCenter / 4);
 
-        // градусная сетка обрамляющяя лист миллионки
+        // Degree border of the corresponding 1M map
         double top1m    = letterNumber * 4;
         double bottom1m = top1m - 4;
         double right1m  = Nz * 6;
         double left1m   = right1m - 6;
 
-        box[0] = PointReal(top1m, left1m);
-        box[1] = PointReal(top1m, right1m);
-        box[2] = PointReal(bottom1m, left1m);
-        box[3] = PointReal(bottom1m, right1m);
+        shapeBorderCoordinates[0] = PointReal(top1m, left1m);
+        shapeBorderCoordinates[1] = PointReal(top1m, right1m);
+        shapeBorderCoordinates[2] = PointReal(bottom1m, left1m);
+        shapeBorderCoordinates[3] = PointReal(bottom1m, right1m);
 
         for (int i = 0; i < 4; ++i)
         {
             if (pjTar)
             {
-                // В представлении LatLon первой указывается широта, которая, по сути
-                // координата Y, а второй - долгота, которая, по сути, координата X
-                // поэтому перед передачей pj_transform мы должны поставить всё на свои места:
-                //   первой координатой идёт X (lon), второй Y (lat)
+                // At the LatLon representation, first is a latitude that is a Y. Second -
+                // longitude that is X. Before pass it to the pj_transform() we must put to
+                // correct places:
+                //    first - X (lon), second - Y (lat)
                 double u;
                 double v;
-                u = box[i].y * DEG_TO_RAD;
-                v = box[i].x * DEG_TO_RAD;
+                u = shapeBorderCoordinates[i].y * DEG_TO_RAD;
+                v = shapeBorderCoordinates[i].x * DEG_TO_RAD;
                 pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
 
-                box[i].x = u;
-                box[i].y = v;
+                shapeBorderCoordinates[i].x = u;
+                shapeBorderCoordinates[i].y = v;
             }
 
             // Пересчитаем координаты в пиксели на картинке
             geoToPixelCoordinate(geoTransform,
-                                 box[i].x, box[i].y, boxPix[i].x, boxPix[i].y);
+                                 shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
         }
 
         char plateCh = 'A' + letterNumber - 1;              // Буква листа
@@ -375,26 +373,28 @@ int main(int argc, char **argv)
                bottom1m, left1m, bottom1m, right1m);
 
 
-        int tmpx = 1;   // номер листа в ряду миллионки, от 0, слева на право
-        int tmpy = 1;   // номер листа в столбце миллионки, от 0, сверху вниз
-        int plateSubNum = 1; // сквозной номер листа в миллионке, имеет смысл для 100k, 200k и 500k
-                             // более крупные масштабы основываются на 100k с добавлениями
-                             // для 500k, это номер буквы, т.к. он обозначается как O-50-A
-        double plateWidthMin  = 360; // Ширина листа в минутах, 360 - для миллионки
-        double plateHeightMin = 240; // Высота листа в минутах, 240 - для миллионки
-        int    plateWidthInSubplates = 1; // Ширина листа миллионки в листах более крупного масштаба
+        int tmpx = 1;   // shape row number at the 1M base map, from 0 left-to-right
+        int tmpy = 1;   // shape column number at the 1M base map, from 0 top-to-bottm
+        int plateSubNum = 1; // linear shape number at the 1M base map, valid for 500k, 200k and 100k subsets
+                             // more huge scales bases on 100k settings
+                             // for 500k subbser, linear number is a letter 'А'-'Г' on Russian or
+                             // 'A'-'D', like O-50-A
+        double plateWidthMin  = 360; // Shape width in minutes, 360 - for 1M map
+        double plateHeightMin = 240; // Shape height in minutes, 240 - for 1M map
+        int    plateWidthInSubplates = 1; // 1M shape width in subset scales,
+                                          // for example, 1M map width of 500k maps is a 2
 
-        double subPlateTop    = top1m;      // верх листа в географических координатах
-        double subPlateBottom = bottom1m;   // низ листа в географических координатах
-        double subPlateLeft   = left1m;     // левый край листа в географических координатах
-        double subPlateRight  = right1m;    // правый край листа в географических координатах
+        double subPlateTop    = top1m;      // Shape top in LonLat coordinates
+        double subPlateBottom = bottom1m;   // Shape bottom in LonLat coordinates
+        double subPlateLeft   = left1m;     // Shape left in LonLat coordinates
+        double subPlateRight  = right1m;    // Shape right in LonLat coordinates
 
-        bool   knownScale     = false;      // известен ли нам данным масштаб, будет если false
-                                            // будет принятор, что у нас миллионка
+        bool   knownScale     = false;      // true if we known specified scale. Otherwise assume that
+                                            // we deals with 1M map
 
         if (scale == "100k" || scale == "50k" || scale == "25k")
         {
-            // Параметры для километровки, более мелкие масштабы считаются уже как дочерние к ним
+            // 100k subsets (50k, 25k) calculates based on superset (100k) settings
             plateWidthInSubplates = 12;
             plateWidthMin         = 30;
             plateHeightMin        = 20;
@@ -417,21 +417,21 @@ int main(int argc, char **argv)
 
         if (knownScale)
         {
-            // определяем номер листа
+            // Detect shape number
             tmpx = (int)((geoLonCenter - left1m)    * 60) / plateWidthMin;
             tmpy = (int)((geoLatCenter  - bottom1m) * 60) / plateHeightMin;
 
             tmpy = plateWidthInSubplates - 1 - tmpy; // инвертируем, т.к. растем сверху вниз
             cout << "tmpx = " << tmpx << ", tmpy = " << tmpy << endl;
 
-            // сам номер листа
+            // Shape number
             plateSubNum = tmpy * plateWidthInSubplates + tmpx + 1;
 
             plateNameStream << "-";
-            // Сформируем имя листа
+
+            // Forming shape name
             if (scale == "100k" || scale == "50k" || scale == "25k")
             {
-                // проставим лидирующие нули
                 if (plateSubNum < 10)
                 {
                     plateNameStream << "00";
@@ -452,20 +452,20 @@ int main(int argc, char **argv)
 
             if (scale == "500k")
             {
-                // пятикилометровка обозначается буквой
+                // 500k maps marks with A-D letters
                 char plate500kCh = 'A' + plateSubNum - 1;
                 plateNameStream << plate500kCh;
             }
             else
                 plateNameStream << plateSubNum;
 
-            // границы листа в географических координатах
+            // Shape borders in LonLat coordinates
             subPlateTop    = top1m - tmpy  * plateHeightMin/60.0;
             subPlateBottom = subPlateTop   - plateHeightMin/60.0;
             subPlateLeft   = left1m + tmpx * plateWidthMin/60.0;
             subPlateRight  = subPlateLeft  + plateWidthMin/60.0;
 
-            // Уточняемся для крупных масштабов
+            // Be more patient for the huge scales
             if (scale == "50k" || scale == "25k")
             {
                 char plate50kCh = getSubplate(geoLonCenter,
@@ -496,7 +496,7 @@ int main(int argc, char **argv)
                         return 1;
                     }
 
-                    plate25kCh -= ('A' - 'a'); // хитрый способ смены регистра :-)
+                    plate25kCh -= ('A' - 'a'); // change register :-)
                     plateNameStream << '-' << plate25kCh;
                 }
 
@@ -511,58 +511,59 @@ int main(int argc, char **argv)
                    subPlateTop,    subPlateLeft, subPlateTop,    subPlateRight,
                    subPlateBottom, subPlateLeft, subPlateBottom, subPlateRight);
 
-            // Переведём координаты в исходную систему
-            box[0] = PointReal(subPlateTop,    subPlateLeft);
-            box[1] = PointReal(subPlateTop,    subPlateRight);
-            box[2] = PointReal(subPlateBottom, subPlateLeft);
-            box[3] = PointReal(subPlateBottom, subPlateRight);
+            // Recalc coordinates to the source SRS
+            shapeBorderCoordinates[0] = PointReal(subPlateTop,    subPlateLeft);
+            shapeBorderCoordinates[1] = PointReal(subPlateTop,    subPlateRight);
+            shapeBorderCoordinates[2] = PointReal(subPlateBottom, subPlateLeft);
+            shapeBorderCoordinates[3] = PointReal(subPlateBottom, subPlateRight);
 
             for (int i = 0; i < 4; ++i)
             {
                 if (pjTar)
                 {
-                    // В представлении LatLon первой указывается широта, которая, по сути
-                    // координата Y, а второй - долгота, которая, по сути, координата X
-                    // поэтому перед передачей pj_transform мы должны поставить всё на свои места:
-                    //   первой координатой идёт X (lon), второй Y (lat)
-                    double u = box[i].y * DEG_TO_RAD;
-                    double v = box[i].x * DEG_TO_RAD;
+                    // At the LatLon representation, first is a latitude that is a Y. Second -
+                    // longitude that is X. Before pass it to the pj_transform() we must put to
+                    // correct places:
+                    //    first - X (lon), second - Y (lat)
+                    double u = shapeBorderCoordinates[i].y * DEG_TO_RAD;
+                    double v = shapeBorderCoordinates[i].x * DEG_TO_RAD;
                     pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
 
-                    box[i].x = u;
-                    box[i].y = v;
+                    shapeBorderCoordinates[i].x = u;
+                    shapeBorderCoordinates[i].y = v;
                 }
 
-                // Пересчитаем координаты в пиксели на картинке
+                // Recalculate coordinates to the raster pixels
                 geoToPixelCoordinate(geoTransform,
-                                     box[i].x, box[i].y, boxPix[i].x, boxPix[i].y);
+                                     shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
 
-                // TODO: тут можно сделать так, что если это всего лишь часть листа.
-                // например если координаты отрицательные, значит выставить в ноль
-                // если больше ширины листа - выставить в максимальный размер.
-                // Но вопрос требует более детального рассмотрения.
+                // TODO: add processing for partial shapes: there is a lot of scanned maps with breaks
+                //       one shape to the seleveral ones. Some notes:
+                //       - if coordinates negate, set it to the zero
+                //       - if coordinates greater real shape size, limit it with shape size
             }
-
         }
 
         printf("Shape border coordinates %s:\n"
                "   (%.6f, %.6f)   (%.6f, %.6f)\n"
                "   (%.6f, %.6f)   (%.6f, %.6f)\n",
                plateNameStream.str().c_str(),
-               box[0].x, box[0].y,
-               box[1].x, box[1].y,
-               box[2].x, box[2].y,
-               box[3].x, box[3].y);
+               shapeBorderCoordinates[0].x, shapeBorderCoordinates[0].y,
+               shapeBorderCoordinates[1].x, shapeBorderCoordinates[1].y,
+               shapeBorderCoordinates[2].x, shapeBorderCoordinates[2].y,
+               shapeBorderCoordinates[3].x, shapeBorderCoordinates[3].y);
         printf("Shape border in pixels %s:\n"
                "   (%5d, %5d)   (%5d, %5d)\n"
                "   (%5d, %5d)   (%5d, %5d)\n",
                plateNameStream.str().c_str(),
-               boxPix[0].x, boxPix[0].y,
-               boxPix[1].x, boxPix[1].y,
-               boxPix[2].x, boxPix[2].y,
-               boxPix[3].x, boxPix[3].y);
+               shapeBorderPixels[0].x, shapeBorderPixels[0].y,
+               shapeBorderPixels[1].x, shapeBorderPixels[1].y,
+               shapeBorderPixels[2].x, shapeBorderPixels[2].y,
+               shapeBorderPixels[3].x, shapeBorderPixels[3].y);
 
-        // Теперь сделаем кроп
+        // Prepare "cutline" file. Use CSV with WKT:
+        //   http://www.gdal.org/drv_csv.html
+        //   https://en.wikipedia.org/wiki/Well-known_text
         string cutlineFile = genTempFileName() + ".csv";
         ofstream cutline(cutlineFile.c_str());
         cutline << "WKT,dummy\n" << "\"";
@@ -572,16 +573,16 @@ int main(int argc, char **argv)
 
         if (knownScale)
         {
-            cutlinePolygon << box[0].x << " " << box[0].y << ",";
-            cutlinePolygon << box[1].x << " " << box[1].y << ",";
-            cutlinePolygon << box[3].x << " " << box[3].y << ",";
-            cutlinePolygon << box[2].x << " " << box[2].y;
+            cutlinePolygon << shapeBorderCoordinates[0].x << " " << shapeBorderCoordinates[0].y << ",";
+            cutlinePolygon << shapeBorderCoordinates[1].x << " " << shapeBorderCoordinates[1].y << ",";
+            cutlinePolygon << shapeBorderCoordinates[3].x << " " << shapeBorderCoordinates[3].y << ",";
+            cutlinePolygon << shapeBorderCoordinates[2].x << " " << shapeBorderCoordinates[2].y;
         }
         else
         {
-            cutlinePolygon << box[0].x << " " << box[0].y << ",";
+            cutlinePolygon << shapeBorderCoordinates[0].x << " " << shapeBorderCoordinates[0].y << ",";
 
-            // Дополнительные точки обрезки
+            // Additional cut dots
             double lat = top1m;
             for (double lon = left1m + 1; lon < right1m; lon += 1.00)
             {
@@ -598,10 +599,10 @@ int main(int argc, char **argv)
                 cutlinePolygon << u << " " << v << ",";
             }
 
-            cutlinePolygon << box[1].x << " " << box[1].y << ",";
-            cutlinePolygon << box[3].x << " " << box[3].y << ",";
+            cutlinePolygon << shapeBorderCoordinates[1].x << " " << shapeBorderCoordinates[1].y << ",";
+            cutlinePolygon << shapeBorderCoordinates[3].x << " " << shapeBorderCoordinates[3].y << ",";
 
-            // Дополнительные точки обрезки
+            // Additional cut dots
             lat = bottom1m;
             for (double lon = right1m - 1; lon > left1m; lon -= 1.00)
             {
@@ -618,7 +619,7 @@ int main(int argc, char **argv)
                 cutlinePolygon << u << " " << v << ",";
             }
 
-            cutlinePolygon << box[2].x << " " << box[2].y;
+            cutlinePolygon << shapeBorderCoordinates[2].x << " " << shapeBorderCoordinates[2].y;
         }
 
         cutlinePolygon << "))";
