@@ -7,6 +7,8 @@
 #include <fstream>
 
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include <gdal_priv.h>
 #include <ogr_spatialref.h>
@@ -14,13 +16,13 @@
 
 using namespace std;
 
-static const char *s_options = "f:s:";
+static const char *s_options = "f:s:w:n";
 
 void usage(char *name)
 {
     cout << "Tool for automatic crop raster maps\n";
     cout << "(C) Alexander 'hatred' Drozdov, 2012. Distributed under GPLv2 terms\n\n";
-    cout << "Use: " << name << " [args] <in geodata> <croped geodata>\n"
+    cout << "Use: " << name << " [args] <in geodata> <croped geodata> [-- [optional gdalwarp arguments]]\n"
          << "  Input geotiff MUST be in RGB pallete, so, use pct2rgb.py to convert from indexed\n"
          << "  Output geotiff croped and nodata areas is transparency\n"
          << "\n"
@@ -36,6 +38,10 @@ void usage(char *name)
          << "     Any other scales currently not support\n"
          << "  -f OUTPUT_FORMAT\n"
          << "     Any format supported by GDAL. GTiff is default one\n"
+         << "  -n\n"
+         << "     Disable '-crop_to_cutline' option. Border will be only filled with transparent color\n"
+         << "  -w GDALWARP\n"
+         << "     Allow to override `gdalwarp` name and path, by default simple `gdalwarp` and search under PATH\n"
          ;
 
 }
@@ -169,6 +175,11 @@ int main(int argc, char **argv)
     int          rasterXCenter = 0;
     int          rasterYCenter = 0;
 
+    string        gdalwarpPath = "gdalwarp";
+    vector<char*> gdalwarpOpts; // Additional options for gdalwarp
+
+    bool cropToCutline = true;
+
     while (true)
     {
         int opt = getopt(argc, argv, s_options);
@@ -182,6 +193,12 @@ int main(int argc, char **argv)
             case 's':
                 scale = optarg;
                 break;
+            case 'w':
+                gdalwarpPath = optarg;
+                break;
+            case 'n':
+                cropToCutline = false;
+                break;
             default:
                 usage(argv[0]);
                 return 1;
@@ -194,8 +211,17 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    inFileName = argv[optind + 0];
-    ouFileName = argv[optind + 1];
+    inFileName = argv[optind++];
+    ouFileName = argv[optind++];
+
+    if (optind < argc)
+    {
+        gdalwarpOpts.reserve(argc - optind);
+        while (optind++ < argc)
+        {
+            gdalwarpOpts.push_back(argv[optind - 1]);
+        }
+    }
 
     GDALAllRegister();
 
@@ -603,19 +629,45 @@ int main(int argc, char **argv)
         cout << cutlineFile << endl;
         cout << "Polygon:\n" << cutlinePolygon.str() << endl;
 
-        stringstream cropCommand;
-        cropCommand << "gdalwarp "
-                    //<< " -wo \"INIT_DEST=255,255,255,0\" "
-                    //<< " -dstnodata \"255\" "
-                    << " -of "
-                    << ouDriver
-                    << " -dstalpha "
-                    << " -crop_to_cutline "
-                    << " -cutline  " << cutlineFile << " "
-                    << inFileName
-                    << " "
-                    << ouFileName;
-        system(cropCommand.str().c_str());
+        {
+            auto pid = fork();
+            if (pid == 0)
+            {
+                vector<char*> args = {
+                    ::strdup(gdalwarpPath.c_str()),
+                    ::strdup("-of"),
+                    ::strdup(ouDriver.c_str()),
+                    ::strdup("-dstalpha"),
+                    ::strdup("-cutline"),
+                    ::strdup(cutlineFile.c_str()),
+                };
+
+                if (cropToCutline)
+                    args.push_back(::strdup("-crop_to_cutline"));
+
+                if (!gdalwarpOpts.empty())
+                {
+                    // Reserve +1 for future nullptr and input/output file
+                    args.reserve(args.size() + gdalwarpOpts.size() + 3);
+                    copy(begin(gdalwarpOpts), end(gdalwarpOpts), back_inserter(args));
+                }
+
+                args.insert(args.end(), {::strdup(inFileName.c_str()),
+                                         ::strdup(ouFileName.c_str()),
+                                         nullptr});
+
+                clog << "gdalwarp args:\n";
+                for (auto arg : args)
+                {
+                    if (arg)
+                        clog << "   " << arg << endl;
+                }
+
+                if (execvp(gdalwarpPath.c_str(), args.data()) < 0)
+                    exit(1);
+            }
+            waitpid(pid, nullptr, 0);
+        }
 
         unlink(cutlineFile.c_str());
     }
