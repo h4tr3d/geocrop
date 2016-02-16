@@ -5,6 +5,7 @@
 #include <iostream>
 #include <sstream>
 #include <fstream>
+#include <memory>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -16,32 +17,35 @@
 
 using namespace std;
 
-static const char *s_options = "f:s:w:n";
+static const char *s_options = "f:s:w:ng";
 
 void usage(char *name)
 {
     cout << "Tool for automatic crop raster maps\n";
     cout << "(C) Alexander 'hatred' Drozdov, 2012. Distributed under GPLv2 terms\n\n";
-    cout << "Use: " << name << " [args] <in geodata> <croped geodata> [-- [optional gdalwarp arguments]]\n"
+    cout << "Use: " << name << " [args] <in geodata> [<croped geodata>] [-- [optional gdalwarp arguments]]\n"
          << "  Input geotiff MUST be in RGB pallete, so, use pct2rgb.py to convert from indexed\n"
-         << "  Output geotiff croped and nodata areas is transparency\n"
-         << "\n"
-         << "  Args:\n"
-         << "  -s SCALE\n"
-         << "     Scale must be:\n"
-         << "     500k     for 1:500 000 plates\n"
-         << "     200k     for 1:200 000 plates\n"
-         << "     100k(*)  for 1:100 000 plates, used by default\n"
-         << "     50k      for 1:50 000 plates\n"
-         << "     25k      for 1:25 000 plates\n"
-         << "     1M (1:1 000 000) support by default\n"
-         << "     Any other scales currently not support\n"
-         << "  -f OUTPUT_FORMAT\n"
-         << "     Any format supported by GDAL. GTiff is default one\n"
-         << "  -n\n"
-         << "     Disable '-crop_to_cutline' option. Border will be only filled with transparent color\n"
-         << "  -w GDALWARP\n"
-         << "     Allow to override `gdalwarp` name and path, by default simple `gdalwarp` and search under PATH\n"
+            "  Output geotiff croped and nodata areas is transparency\n"
+            "\n"
+            "  Args:\n"
+            "  -s SCALE\n"
+            "     Scale must be:\n"
+            "     500k     for 1:500 000 plates\n"
+            "     200k     for 1:200 000 plates\n"
+            "     100k(*)  for 1:100 000 plates, used by default\n"
+            "     50k      for 1:50 000 plates\n"
+            "     25k      for 1:25 000 plates\n"
+            "     1M (1:1 000 000) support by default\n"
+            "     Any other scales currently not support\n"
+            "  -f OUTPUT_FORMAT\n"
+            "     Any format supported by GDAL. GTiff is default one\n"
+            "  -n\n"
+            "     Disable '-crop_to_cutline' option. Border will be only filled with transparent color\n"
+            "  -w GDALWARP\n"
+            "     Allow to override `gdalwarp` name and path, by default simple `gdalwarp` and search under PATH\n"
+            "  -g\n"
+            "     Only generate CVS description for the `cutline` on `stdout` without `gdalwarp` execution.\n"
+            "     Output files with this option will be ignored and can be omited as arguments.\n"
          ;
 
 }
@@ -180,6 +184,7 @@ int main(int argc, char **argv)
     vector<char*> gdalwarpOpts; // Additional options for gdalwarp
 
     bool cropToCutline = true;
+    bool generateOnly  = false;
 
     while (true)
     {
@@ -200,20 +205,24 @@ int main(int argc, char **argv)
             case 'n':
                 cropToCutline = false;
                 break;
+            case 'g':
+                generateOnly = true;
+                break;
             default:
                 usage(argv[0]);
                 return 1;
         }
     }
 
-    if (optind > argc - 2)
+    if (optind > argc - (generateOnly ? 1 : 2))
     {
         usage(argv[0]);
         return 1;
     }
 
     inFileName = argv[optind++];
-    ouFileName = argv[optind++];
+    if (!generateOnly)
+        ouFileName = argv[optind++];
 
     if (optind < argc)
     {
@@ -229,28 +238,30 @@ int main(int argc, char **argv)
     dataset = (GDALDataset*)GDALOpen(inFileName.c_str(), GA_ReadOnly);
     if (dataset == 0)
     {
-        cerr << "Can't open file: " << inFileName.c_str() << endl;
+        cerr << "Can't open file: " << inFileName << endl;
         return 1;
     }
 
-    cout << "InDriver: " << dataset->GetDriver()->GetDescription() << "/"
+    clog << "InDriver: " << dataset->GetDriver()->GetDescription() << "/"
          << dataset->GetDriver()->GetMetadata(GDAL_DMD_LONGNAME) << endl;
 
-    cout << "InSize: " << dataset->GetRasterXSize() << "x" << dataset->GetRasterYSize() << "x"
+    clog << "InSize: " << dataset->GetRasterXSize() << "x" << dataset->GetRasterYSize() << "x"
          << dataset->GetRasterCount() << endl;
 
     if (dataset->GetProjectionRef() != 0)
     {
-        cout << "Projection: " << dataset->GetProjectionRef() << endl;
+        clog << "Projection: " << dataset->GetProjectionRef() << endl;
     }
 
     if (dataset->GetGeoTransform(geoTransform) == CE_None)
     {
-        printf( "Coordinate zero (%.6f,%.6f)\n",
-                        geoTransform[0], geoTransform[3] );
+        fprintf(stderr,
+                "Coordinate zero (%.6f,%.6f)\n",
+                geoTransform[0], geoTransform[3] );
 
-        printf( "Pixel size (%.6f,%.6f)\n",
-                        geoTransform[1], geoTransform[5] );
+        fprintf(stderr,
+                "Pixel size (%.6f,%.6f)\n",
+                geoTransform[1], geoTransform[5] );
 
         rasterXSize = dataset->GetRasterXSize();
         rasterYSize = dataset->GetRasterYSize();
@@ -268,10 +279,10 @@ int main(int argc, char **argv)
 
         pixelToGeoCoordinate(geoTransform, rasterXCenter, rasterYCenter, geoXCenter, geoYCenter);
 
-        printf("Shape center: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
-        printf("Shape center coordinates: (%.6f, %.6f)\n", geoXCenter, geoYCenter);
+        fprintf(stderr, "Shape center: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
+        fprintf(stderr, "Shape center coordinates: (%.6f, %.6f)\n", geoXCenter, geoYCenter);
 
-        // проверка обратного преобразования
+        // Back conversion check
         //geoToPixelCoordinate(geoTransform, geoXCenter, geoYCenter, rasterXCenter, rasterYCenter);
         //printf("Центр листа: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
 
@@ -283,7 +294,7 @@ int main(int argc, char **argv)
         inSrs.exportToProj4(&proj4Ref);
         string inProj = proj4Ref;
 
-        cout << "PROJ4: " << inProj << endl;
+        clog << "PROJ4: " << inProj << endl;
 
         // Recalc metric coordinates to the LonLat for shape detection
         double u = 0.0, v = 0.0;
@@ -300,7 +311,7 @@ int main(int argc, char **argv)
             pjTar = pj_latlong_from_proj(pjSrc);
 
             projPJ pjTmp = pj_latlong_from_proj(pjSrc);
-            cout << "PROJ4: "  << pj_get_def(pjTmp, 0) << endl;
+            clog << "PROJ4: "  << pj_get_def(pjTmp, 0) << endl;
 
             if (pjSrc == 0 || pjTar == 0)
             {
@@ -315,7 +326,7 @@ int main(int argc, char **argv)
             geoLonCenter = u * RAD_TO_DEG;
             geoLatCenter = v * RAD_TO_DEG;
 
-            printf("Shape center coordinates (alt/lon): (%.6f, %.6f)\n",
+            fprintf(stderr, "Shape center coordinates (alt/lon): (%.6f, %.6f)\n",
                    geoLatCenter, geoLonCenter);
         }
 
@@ -352,25 +363,26 @@ int main(int argc, char **argv)
                 shapeBorderCoordinates[i].y = v;
             }
 
-            // Пересчитаем координаты в пиксели на картинке
+            // Recalc coordinates to the pixels
             geoToPixelCoordinate(geoTransform,
                                  shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
         }
 
-        char plateCh = 'A' + letterNumber - 1;              // Буква листа
-        int  plateNum = Nz + 30;                            // Номер листа
+        char plateCh = 'A' + letterNumber - 1;              // Shape letter
+        int  plateNum = Nz + 30;                            // Shape number
 
         stringstream plateNameStream;
         plateNameStream << plateCh << "-" << plateNum;
         plateName = plateNameStream.str();
 
-        cout << "Shape of the 1M map: " << plateName << endl;
-        printf("Shape border coordinates (lat/lon) %s:\n"
-               "   (%.6f, %.6f)   (%.6f, %.6f)\n"
-               "   (%.6f, %.6f)   (%.6f, %.6f)\n",
-               plateNameStream.str().c_str(),
-               top1m, left1m, top1m, right1m,
-               bottom1m, left1m, bottom1m, right1m);
+        clog << "Shape of the 1M map: " << plateName << endl;
+        fprintf(stderr,
+                "Shape border coordinates (lat/lon) %s:\n"
+                "   (%.6f, %.6f)   (%.6f, %.6f)\n"
+                "   (%.6f, %.6f)   (%.6f, %.6f)\n",
+                plateNameStream.str().c_str(),
+                top1m, left1m, top1m, right1m,
+                bottom1m, left1m, bottom1m, right1m);
 
 
         int tmpx = 1;   // shape row number at the 1M base map, from 0 left-to-right
@@ -422,7 +434,7 @@ int main(int argc, char **argv)
             tmpy = (int)((geoLatCenter  - bottom1m) * 60) / plateHeightMin;
 
             tmpy = plateWidthInSubplates - 1 - tmpy; // инвертируем, т.к. растем сверху вниз
-            cout << "tmpx = " << tmpx << ", tmpy = " << tmpy << endl;
+            clog << "tmpx = " << tmpx << ", tmpy = " << tmpy << endl;
 
             // Shape number
             plateSubNum = tmpy * plateWidthInSubplates + tmpx + 1;
@@ -502,14 +514,15 @@ int main(int argc, char **argv)
 
             }
 
-            cout << "Shape number: " << plateNameStream.str() << endl;
+            clog << "Shape number: " << plateNameStream.str() << endl;
 
-            printf("Shape border coordinates (lat/lon) %s:\n"
-                   "   (%.6f, %.6f)   (%.6f, %.6f)\n"
-                   "   (%.6f, %.6f)   (%.6f, %.6f)\n",
-                   plateNameStream.str().c_str(),
-                   subPlateTop,    subPlateLeft, subPlateTop,    subPlateRight,
-                   subPlateBottom, subPlateLeft, subPlateBottom, subPlateRight);
+            fprintf(stderr,
+                    "Shape border coordinates (lat/lon) %s:\n"
+                    "   (%.6f, %.6f)   (%.6f, %.6f)\n"
+                    "   (%.6f, %.6f)   (%.6f, %.6f)\n",
+                    plateNameStream.str().c_str(),
+                    subPlateTop,    subPlateLeft, subPlateTop,    subPlateRight,
+                    subPlateBottom, subPlateLeft, subPlateBottom, subPlateRight);
 
             // Recalc coordinates to the source SRS
             shapeBorderCoordinates[0] = PointReal(subPlateTop,    subPlateLeft);
@@ -544,29 +557,52 @@ int main(int argc, char **argv)
             }
         }
 
-        printf("Shape border coordinates %s:\n"
-               "   (%.6f, %.6f)   (%.6f, %.6f)\n"
-               "   (%.6f, %.6f)   (%.6f, %.6f)\n",
-               plateNameStream.str().c_str(),
-               shapeBorderCoordinates[0].x, shapeBorderCoordinates[0].y,
-               shapeBorderCoordinates[1].x, shapeBorderCoordinates[1].y,
-               shapeBorderCoordinates[2].x, shapeBorderCoordinates[2].y,
-               shapeBorderCoordinates[3].x, shapeBorderCoordinates[3].y);
-        printf("Shape border in pixels %s:\n"
-               "   (%5d, %5d)   (%5d, %5d)\n"
-               "   (%5d, %5d)   (%5d, %5d)\n",
-               plateNameStream.str().c_str(),
-               shapeBorderPixels[0].x, shapeBorderPixels[0].y,
-               shapeBorderPixels[1].x, shapeBorderPixels[1].y,
-               shapeBorderPixels[2].x, shapeBorderPixels[2].y,
-               shapeBorderPixels[3].x, shapeBorderPixels[3].y);
+        fprintf(stderr,
+                "Shape border coordinates %s:\n"
+                "   (%.6f, %.6f)   (%.6f, %.6f)\n"
+                "   (%.6f, %.6f)   (%.6f, %.6f)\n",
+                plateNameStream.str().c_str(),
+                shapeBorderCoordinates[0].x, shapeBorderCoordinates[0].y,
+                shapeBorderCoordinates[1].x, shapeBorderCoordinates[1].y,
+                shapeBorderCoordinates[2].x, shapeBorderCoordinates[2].y,
+                shapeBorderCoordinates[3].x, shapeBorderCoordinates[3].y);
+        fprintf(stderr,
+                "Shape border in pixels %s:\n"
+                "   (%5d, %5d)   (%5d, %5d)\n"
+                "   (%5d, %5d)   (%5d, %5d)\n",
+                plateNameStream.str().c_str(),
+                shapeBorderPixels[0].x, shapeBorderPixels[0].y,
+                shapeBorderPixels[1].x, shapeBorderPixels[1].y,
+                shapeBorderPixels[2].x, shapeBorderPixels[2].y,
+                shapeBorderPixels[3].x, shapeBorderPixels[3].y);
 
         // Prepare "cutline" file. Use CSV with WKT:
         //   http://www.gdal.org/drv_csv.html
         //   https://en.wikipedia.org/wiki/Well-known_text
-        string cutlineFile = genTempFileName() + ".csv";
-        ofstream cutline(cutlineFile.c_str());
-        cutline << "WKT,dummy\n" << "\"";
+
+        struct CutlineStreamFree
+        {
+            void operator()(ostream *ost)
+            {
+                if (ost != &cout &&
+                    ost != &cerr &&
+                    ost != &clog)
+                {
+                    delete ost;
+                }
+            }
+        };
+
+        unique_ptr<ostream, CutlineStreamFree> cutline(&cout);
+        string cutlineFile = "<stdout>";
+
+        if (!generateOnly)
+        {
+            cutlineFile = genTempFileName() + ".csv";
+            cutline.reset(new ofstream(cutlineFile.c_str()));
+        }
+
+        *cutline << "WKT,dummy\n" << "\"";
         stringstream cutlinePolygon;
         
         cutlinePolygon << "POLYGON((";
@@ -624,53 +660,58 @@ int main(int argc, char **argv)
 
         cutlinePolygon << "))";
 
-        cutline << cutlinePolygon.str();
-        cutline << "\",\n";
-        cutline.close();
-        cout << cutlineFile << endl;
-        cout << "Polygon:\n" << cutlinePolygon.str() << endl;
+        *cutline << cutlinePolygon.str();
+        *cutline << "\",\n";
+        cutline.reset();
 
+        clog << cutlineFile << endl;
+        clog << "Polygon:\n" << cutlinePolygon.str() << endl;
+
+        if (!generateOnly)
         {
-            auto pid = fork();
-            if (pid == 0)
+
             {
-                vector<char*> args = {
-                    ::strdup(gdalwarpPath.c_str()),
-                    ::strdup("-of"),
-                    ::strdup(ouDriver.c_str()),
-                    ::strdup("-dstalpha"),
-                    ::strdup("-cutline"),
-                    ::strdup(cutlineFile.c_str()),
-                };
-
-                if (cropToCutline)
-                    args.push_back(::strdup("-crop_to_cutline"));
-
-                if (!gdalwarpOpts.empty())
+                auto pid = fork();
+                if (pid == 0)
                 {
-                    // Reserve +1 for future nullptr and input/output file
-                    args.reserve(args.size() + gdalwarpOpts.size() + 3);
-                    copy(begin(gdalwarpOpts), end(gdalwarpOpts), back_inserter(args));
+                    vector<char*> args = {
+                        ::strdup(gdalwarpPath.c_str()),
+                        ::strdup("-of"),
+                        ::strdup(ouDriver.c_str()),
+                        ::strdup("-dstalpha"),
+                        ::strdup("-cutline"),
+                        ::strdup(cutlineFile.c_str()),
+                    };
+
+                    if (cropToCutline)
+                        args.push_back(::strdup("-crop_to_cutline"));
+
+                    if (!gdalwarpOpts.empty())
+                    {
+                        // Reserve +1 for future nullptr and input/output file
+                        args.reserve(args.size() + gdalwarpOpts.size() + 3);
+                        copy(begin(gdalwarpOpts), end(gdalwarpOpts), back_inserter(args));
+                    }
+
+                    args.insert(args.end(), {::strdup(inFileName.c_str()),
+                                             ::strdup(ouFileName.c_str()),
+                                             nullptr});
+
+                    clog << "gdalwarp args:\n";
+                    for (auto arg : args)
+                    {
+                        if (arg)
+                            clog << "   " << arg << endl;
+                    }
+
+                    if (execvp(gdalwarpPath.c_str(), args.data()) < 0)
+                        exit(1);
                 }
-
-                args.insert(args.end(), {::strdup(inFileName.c_str()),
-                                         ::strdup(ouFileName.c_str()),
-                                         nullptr});
-
-                clog << "gdalwarp args:\n";
-                for (auto arg : args)
-                {
-                    if (arg)
-                        clog << "   " << arg << endl;
-                }
-
-                if (execvp(gdalwarpPath.c_str(), args.data()) < 0)
-                    exit(1);
+                waitpid(pid, nullptr, 0);
             }
-            waitpid(pid, nullptr, 0);
-        }
 
-        unlink(cutlineFile.c_str());
+            unlink(cutlineFile.c_str());
+        }
     }
 
     return 0;
