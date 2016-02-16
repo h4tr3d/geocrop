@@ -17,7 +17,7 @@
 
 using namespace std;
 
-static const char *s_options = "f:s:w:ng";
+static const char *s_options = "f:s:w:ngp:";
 
 void usage(char *name)
 {
@@ -46,8 +46,9 @@ void usage(char *name)
             "  -g\n"
             "     Only generate CVS description for the `cutline` on `stdout` without `gdalwarp` execution.\n"
             "     Output files with this option will be ignored and can be omited as arguments.\n"
+            "  -p srs_def\n"
+            "     Override projection for dataset\n"
          ;
-
 }
 
 void pixelToGeoCoordinate(double geoTransform[6],
@@ -162,6 +163,23 @@ typedef Point<double> PointReal;
 typedef Point<int>    PointInt;
 
 
+bool load_projection(const char* projfilename, GDALDataset *dataset)
+{
+    ifstream ifs(projfilename);
+    if (ifs)
+    {
+        string wktprojection;
+        string line;
+        while (getline(ifs, line))
+        {
+            wktprojection += line;
+        }
+
+        return dataset->SetProjection(wktprojection.c_str()) == CE_None;
+    }
+    return false;
+}
+
 //
 // http://www.gdal.org/gdal_tutorial_ru.html
 //
@@ -172,6 +190,7 @@ int main(int argc, char **argv)
     string       scale = "100k";
     string       inFileName;
     string       ouFileName;
+    string       prjFileName;
     string       ouDriver = "GTiff";
 
     double       geoTransform[6];
@@ -207,6 +226,9 @@ int main(int argc, char **argv)
                 break;
             case 'g':
                 generateOnly = true;
+                break;
+            case 'p':
+                prjFileName = optarg;
                 break;
             default:
                 usage(argv[0]);
@@ -248,7 +270,36 @@ int main(int argc, char **argv)
     clog << "InSize: " << dataset->GetRasterXSize() << "x" << dataset->GetRasterYSize() << "x"
          << dataset->GetRasterCount() << endl;
 
-    if (dataset->GetProjectionRef() != 0)
+    // Override or detect projection
+    if (!prjFileName.empty())
+    {
+        clog << "Override projection with: '" << prjFileName << "'\n";
+        if (!load_projection(prjFileName.c_str(), dataset))
+        {
+            cerr << "Can't load projection\n";
+            return 1;
+        }
+
+        gdalwarpOpts.push_back(::strdup("-s_srs"));
+        gdalwarpOpts.push_back(::strdup(prjFileName.c_str()));
+    }
+    else if (dataset->GetProjectionRef() == nullptr || *dataset->GetProjectionRef() == '\0')
+    {
+        clog << "Empty projection...\n";
+        for (auto ext : {"prj", "prf"})
+        {
+            auto projfilename = CPLResetExtension(inFileName.c_str(), ext);
+            clog << "  Try load from the '" << projfilename << "'\n";
+            if (load_projection(projfilename, dataset))
+            {
+                gdalwarpOpts.push_back(::strdup("-s_srs"));
+                gdalwarpOpts.push_back(::strdup(projfilename));
+                break;
+            }
+        }
+    }
+
+    if (dataset->GetProjectionRef() != nullptr)
     {
         clog << "Projection: " << dataset->GetProjectionRef() << endl;
     }
