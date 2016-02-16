@@ -51,9 +51,9 @@ void usage(char *name)
          ;
 }
 
-void pixelToGeoCoordinate(double geoTransform[6],
-                          int    rasterX, int    rasterY,
-                          double &geoX,   double &geoY)
+void pixel_to_geo_coordinate(double geoTransform[6],
+                             int    rasterX, int    rasterY,
+                             double &geoX,   double &geoY)
 {
     // geoTransformation to World File notation
     double A = geoTransform[1]; // ширина пикселя
@@ -68,9 +68,9 @@ void pixelToGeoCoordinate(double geoTransform[6],
     geoY = F + rasterY * D + rasterX * B;
 }
 
-void geoToPixelCoordinate(double geoTransform[6],
-                          double geoX,     double geoY,
-                          int    &rasterX, int    &rasterY)
+void geo_to_pixel_coordinate(double geoTransform[6],
+                             double geoX,     double geoY,
+                             int    &rasterX, int    &rasterY)
 {
     // geoTransformation to World File notation
     double A = geoTransform[1]; // ширина пикселя
@@ -85,7 +85,7 @@ void geoToPixelCoordinate(double geoTransform[6],
     rasterY = (geoY - F - rasterX * B) / D;
 }
 
-string genTempFileName()
+string generate_temp_file_name()
 {
     char name[] = "/tmp/geocrop.XXXXXX";
     close(mkstemp(name));
@@ -103,10 +103,12 @@ string genTempFileName()
 //
 // Далее, так же последовательно можно сделать расчёт для двухсотпятидесятиметровки
 //
-char getSubplate(double lon, double lat, double &subPlateTop,
-                                         double &subPlateLeft,
-                                         double &subPlateBottom,
-                                         double &subPlateRight)
+char get_subplate(double lon,
+                  double lat,
+                  double &subPlateTop,
+                  double &subPlateLeft,
+                  double &subPlateBottom,
+                  double &subPlateRight)
 {
     double centerLon = subPlateLeft + (subPlateRight - subPlateLeft) / 2;
     double centerLat = subPlateBottom + (subPlateTop - subPlateBottom) / 2;
@@ -148,21 +150,6 @@ char getSubplate(double lon, double lat, double &subPlateTop,
     return subPlateCh;
 }
 
-
-template<typename T>
-struct Point
-{
-    Point() : x(0.0), y(0.0) {}
-    Point(T x, T y) : x(x), y(y) {}
-
-    T x;
-    T y;
-};
-
-typedef Point<double> PointReal;
-typedef Point<int>    PointInt;
-
-
 bool load_projection(const char* projfilename, GDALDataset *dataset)
 {
     ifstream ifs(projfilename);
@@ -179,6 +166,19 @@ bool load_projection(const char* projfilename, GDALDataset *dataset)
     }
     return false;
 }
+
+template<typename T>
+struct Point
+{
+    Point() : x(0.0), y(0.0) {}
+    Point(T x, T y) : x(x), y(y) {}
+
+    T x;
+    T y;
+};
+
+typedef Point<double> PointReal;
+typedef Point<int>    PointInt;
 
 //
 // http://www.gdal.org/gdal_tutorial_ru.html
@@ -328,7 +328,7 @@ int main(int argc, char **argv)
         double geoXCenter;
         double geoYCenter;
 
-        pixelToGeoCoordinate(geoTransform, rasterXCenter, rasterYCenter, geoXCenter, geoYCenter);
+        pixel_to_geo_coordinate(geoTransform, rasterXCenter, rasterYCenter, geoXCenter, geoYCenter);
 
         fprintf(stderr, "Shape center: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
         fprintf(stderr, "Shape center coordinates: (%.6f, %.6f)\n", geoXCenter, geoYCenter);
@@ -415,7 +415,7 @@ int main(int argc, char **argv)
             }
 
             // Recalc coordinates to the pixels
-            geoToPixelCoordinate(geoTransform,
+            geo_to_pixel_coordinate(geoTransform,
                                  shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
         }
 
@@ -531,7 +531,7 @@ int main(int argc, char **argv)
             // Be more patient for the huge scales
             if (scale == "50k" || scale == "25k")
             {
-                char plate50kCh = getSubplate(geoLonCenter,
+                char plate50kCh = get_subplate(geoLonCenter,
                                               geoLatCenter,
                                               subPlateTop,
                                               subPlateLeft,
@@ -547,7 +547,7 @@ int main(int argc, char **argv)
 
                 if (scale == "25k")
                 {
-                    char plate25kCh = getSubplate(geoLonCenter,
+                    char plate25kCh = get_subplate(geoLonCenter,
                                                   geoLatCenter,
                                                   subPlateTop,
                                                   subPlateLeft,
@@ -598,7 +598,7 @@ int main(int argc, char **argv)
                 }
 
                 // Recalculate coordinates to the raster pixels
-                geoToPixelCoordinate(geoTransform,
+                geo_to_pixel_coordinate(geoTransform,
                                      shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
 
                 // TODO: add processing for partial shapes: there is a lot of scanned maps with breaks
@@ -649,7 +649,7 @@ int main(int argc, char **argv)
 
         if (!generateOnly)
         {
-            cutlineFile = genTempFileName() + ".csv";
+            cutlineFile = generate_temp_file_name() + ".csv";
             cutline.reset(new ofstream(cutlineFile.c_str()));
         }
 
