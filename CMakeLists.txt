@@ -37,6 +37,20 @@ endif ()
 # where to look first for cmake modules, before ${CMAKE_ROOT}/Modules/ is checked
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
+# Generate gitinfo
+if(EXISTS ${CMAKE_SOURCE_DIR}/.git/)
+    execute_process(COMMAND git describe --tags
+                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    RESULT_VARIABLE result
+                    OUTPUT_VARIABLE describe
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if (${result} EQUAL 0)
+        add_definitions(-DGEOCROP_VERSION_ADDON="-git+${describe}")
+    else()
+        add_definitions(-DGEOCROP_VERSION_ADDON="-git")
+    endif()
+endif()
+
 #find_package(Threads)
 #find_package(PkgConfig)
 

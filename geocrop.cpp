@@ -15,15 +15,23 @@
 #include <ogr_spatialref.h>
 #include <proj_api.h>
 
+#include "version.h"
+
 using namespace std;
 
-static const char *s_options = "f:s:w:ngp:";
+static const char *s_options = "f:s:w:ngp:Vh";
+
+void version()
+{
+    cout << "version: " << GEOCROP_VERSION << '\n';
+}
 
 void usage(char *name)
 {
     cout << "Tool for automatic crop raster maps\n";
-    cout << "(C) Alexander 'hatred' Drozdov, 2012. Distributed under GPLv2 terms\n\n";
-    cout << "Use: " << name << " [args] <in geodata> [<croped geodata>] [-- [optional gdalwarp arguments]]\n"
+    cout << "(C) Alexander 'hatred' Drozdov, 2012-2016. Distributed under GPLv2 terms\n";
+    version();
+    cout << "\nUse: " << name << " [args] <in geodata> [<croped geodata>] [-- [optional gdalwarp arguments]]\n"
          << "  Input geotiff MUST be in RGB pallete, so, use pct2rgb.py to convert from indexed\n"
             "  Output geotiff croped and nodata areas is transparency\n"
             "\n"
@@ -48,6 +56,10 @@ void usage(char *name)
             "     Output files with this option will be ignored and can be omited as arguments.\n"
             "  -p srs_def\n"
             "     Override projection for dataset\n"
+            "  -V\n"
+            "     Output version and exit.\n"
+            "  -h\n"
+            "     This screen.\n"
          ;
 }
 
@@ -230,9 +242,12 @@ int main(int argc, char **argv)
             case 'p':
                 prjFileName = optarg;
                 break;
+            case 'V':
+                version();
+                return 0;
             default:
                 usage(argv[0]);
-                return 1;
+                return opt == 'h' ? 0 : 1;
         }
     }
 
