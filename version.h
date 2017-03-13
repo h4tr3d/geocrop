@@ -1,6 +1,6 @@
 #pragma once
 
-#define GEOCROP_VERSION_BASE "1.0"
+#define GEOCROP_VERSION_BASE "1.1"
 
 #ifndef GEOCROP_VERSION_ADDON
 #define GEOCROP_VERSION_ADDON

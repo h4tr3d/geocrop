@@ -19,7 +19,65 @@
 
 using namespace std;
 
-static const char *s_options = "f:s:w:ngp:Vh";
+static const char * const s_options = "f:s:Sw:ngp:Vh";
+
+struct GeoTransformMatrix
+{
+    std::array<double, 6> matrix;
+
+    double* get()
+    {
+        return matrix.data();
+    }
+
+    double pixelWidth() const
+    {
+        return matrix[1];
+    }
+
+    double pixelHeight() const
+    {
+        return matrix[5];
+    }
+
+    double left() const
+    {
+        return matrix[0];
+    }
+
+    double top() const
+    {
+        return matrix[3];
+    }
+
+    // TODO
+    double rtnX() const
+    {
+        return matrix[2];
+    }
+
+    // TODO
+    double rtnY() const
+    {
+        return matrix[4];
+    }
+
+
+    void pixelToCoordinate(int    rasterX, int    rasterY,
+                           double &geoX,   double &geoY)
+    {
+        geoX = left() + rasterX * pixelWidth() + rasterY * rtnY();
+        geoY = top()  + rasterY * pixelHeight() + rasterX * rtnX();
+    }
+
+    void coordinateToPixel(double geoX,     double geoY,
+                           int    &rasterX, int    &rasterY)
+    {
+        // TODO: optimize
+        rasterX = (geoX - left() - rtnY()/pixelHeight()*geoY + top()*rtnY()/pixelHeight()) / (pixelWidth() - rtnX()*rtnY()/pixelHeight());
+        rasterY = (geoY - top() - rasterX * rtnX()) / pixelHeight();
+    }
+};
 
 void version()
 {
@@ -29,7 +87,7 @@ void version()
 void usage(char *name)
 {
     cout << "Tool for automatic crop raster maps\n";
-    cout << "(C) Alexander 'hatred' Drozdov, 2012-2016. Distributed under GPLv2 terms\n";
+    cout << "(C) Alexander 'hatred' Drozdov, 2012-2017. Distributed under GPLv2 terms\n";
     version();
     cout << "\nUse: " << name << " [args] <in geodata> [<croped geodata>] [-- [optional gdalwarp arguments]]\n"
          << "  Input geotiff MUST be in RGB pallete, so, use pct2rgb.py to convert from indexed\n"
@@ -43,8 +101,10 @@ void usage(char *name)
             "     100k(*)  for 1:100 000 plates, used by default\n"
             "     50k      for 1:50 000 plates\n"
             "     25k      for 1:25 000 plates\n"
-            "     1M (1:1 000 000) support by default\n"
+            "     1M (1:1 000 000) used by default\n"
             "     Any other scales currently not support\n"
+            "  -S turn off auto-detection for doubled plates (60-76 degrees) and quadruple\n"
+            "     plates (over 76 degree)\n"
             "  -f OUTPUT_FORMAT\n"
             "     Any format supported by GDAL. GTiff is default one\n"
             "  -n\n"
@@ -61,40 +121,6 @@ void usage(char *name)
             "  -h\n"
             "     This screen.\n"
          ;
-}
-
-void pixel_to_geo_coordinate(double geoTransform[6],
-                             int    rasterX, int    rasterY,
-                             double &geoX,   double &geoY)
-{
-    // geoTransformation to World File notation
-    double A = geoTransform[1]; // ширина пикселя
-    double B = geoTransform[2]; // TODO: или 4, но для северного полушария 0
-    double C = geoTransform[4]; // TODO: или 2, но для северного полушария 0
-    double D = geoTransform[5]; // высота пикселя
-    double E = geoTransform[0]; // top left X geo location
-    double F = geoTransform[3]; // top left Y geo location
-
-    // Перевод координат пикселей в географические координаты
-    geoX = E + rasterX * A + rasterY * C;
-    geoY = F + rasterY * D + rasterX * B;
-}
-
-void geo_to_pixel_coordinate(double geoTransform[6],
-                             double geoX,     double geoY,
-                             int    &rasterX, int    &rasterY)
-{
-    // geoTransformation to World File notation
-    double A = geoTransform[1]; // ширина пикселя
-    double B = geoTransform[2]; // TODO: или 4, но для северного полушария 0
-    double C = geoTransform[4]; // TODO: или 2, но для северного полушария 0
-    double D = geoTransform[5]; // высота пикселя
-    double E = geoTransform[0]; // top left X geo location
-    double F = geoTransform[3]; // top left Y geo location
-
-    // TODO: optimize
-    rasterX = (geoX - E - C/D*geoY + F*C/D) / (A - C*B/D);
-    rasterY = (geoY - F - rasterX * B) / D;
 }
 
 string generate_temp_file_name()
@@ -197,7 +223,10 @@ typedef Point<int>    PointInt;
 //
 int main(int argc, char **argv)
 {
-    GDALDataset *dataset;
+    GDALDataset *dataset = nullptr;
+
+    bool         autodetectDoubles = true;
+    int          mapsCountMult = 1;
 
     string       scale = "100k";
     string       inFileName;
@@ -205,7 +234,7 @@ int main(int argc, char **argv)
     string       prjFileName;
     string       ouDriver = "GTiff";
 
-    double       geoTransform[6];
+    GeoTransformMatrix geoTransform;
     int          rasterXSize = 0;
     int          rasterYSize = 0;
     int          rasterXCenter = 0;
@@ -222,13 +251,16 @@ int main(int argc, char **argv)
         int opt = getopt(argc, argv, s_options);
         if (opt == -1)
             break;
-        switch (opt) 
+        switch (opt)
         {
             case 'f':
                 ouDriver = optarg;
                 break;
             case 's':
                 scale = optarg;
+                break;
+            case 'S':
+                autodetectDoubles = false;
                 break;
             case 'w':
                 gdalwarpPath = optarg;
@@ -319,15 +351,15 @@ int main(int argc, char **argv)
         clog << "Projection: " << dataset->GetProjectionRef() << endl;
     }
 
-    if (dataset->GetGeoTransform(geoTransform) == CE_None)
+    if (dataset->GetGeoTransform(geoTransform.get()) == CE_None)
     {
         fprintf(stderr,
                 "Coordinate zero (%.6f,%.6f)\n",
-                geoTransform[0], geoTransform[3] );
+                geoTransform.left(), geoTransform.top() );
 
         fprintf(stderr,
                 "Pixel size (%.6f,%.6f)\n",
-                geoTransform[1], geoTransform[5] );
+                geoTransform.pixelWidth(), geoTransform.pixelHeight() );
 
         rasterXSize = dataset->GetRasterXSize();
         rasterYSize = dataset->GetRasterYSize();
@@ -337,13 +369,10 @@ int main(int argc, char **argv)
         vector<PointReal> shapeBorderCoordinates(4);
         vector<PointInt>  shapeBorderPixels(4);
 
-        // Full name for the shape
-        string plateName;
-
         double geoXCenter;
         double geoYCenter;
 
-        pixel_to_geo_coordinate(geoTransform, rasterXCenter, rasterYCenter, geoXCenter, geoYCenter);
+        geoTransform.pixelToCoordinate(rasterXCenter, rasterYCenter, geoXCenter, geoYCenter);
 
         fprintf(stderr, "Shape center: (%5d, %5d)\n", rasterXCenter, rasterYCenter);
         fprintf(stderr, "Shape center coordinates: (%.6f, %.6f)\n", geoXCenter, geoYCenter);
@@ -396,15 +425,38 @@ int main(int argc, char **argv)
                    geoLatCenter, geoLonCenter);
         }
 
+        //
         // Detect 1M shape
-        int Nz = (int)ceil(geoLonCenter / 6);
-        int letterNumber = (int)ceil(geoLatCenter / 4);
+        //
 
+        // Detect shape letter (in other word: shape latitude)
+        int letterNumber = (int)ceil(geoLatCenter / 4);
         // Degree border of the corresponding 1M map
         double top1m    = letterNumber * 4;
         double bottom1m = top1m - 4;
-        double right1m  = Nz * 6;
-        double left1m   = right1m - 6;
+
+        // Detect double/quad maps
+        if (autodetectDoubles) {
+            // geoLatCenter, geoLonCenter
+            // To detect doublding/quad maps we should use only geoLatCenter
+            // it allows us correctly detect shape
+
+            // TODO: add support for sourth
+            if (bottom1m >= 60.0) {
+                mapsCountMult = 2; // doubled maps
+            }
+
+            if (bottom1m >= 76.0) {
+                mapsCountMult = 4; // quad maps
+            }
+        }
+
+        fprintf(stderr, "Shape bottom: %f, assume %d maps in Lon direction\n", bottom1m, mapsCountMult);
+
+        // Zone depends on shapes count
+        int Nz = (int)ceil(geoLonCenter / (6 * mapsCountMult));
+        double right1m  = Nz * (6 * mapsCountMult);
+        double left1m   = right1m - (6 * mapsCountMult);
 
         shapeBorderCoordinates[0] = PointReal(top1m, left1m);
         shapeBorderCoordinates[1] = PointReal(top1m, right1m);
@@ -430,23 +482,44 @@ int main(int argc, char **argv)
             }
 
             // Recalc coordinates to the pixels
-            geo_to_pixel_coordinate(geoTransform,
-                                 shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
+            geoTransform.coordinateToPixel(shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
         }
 
         char plateCh = 'A' + letterNumber - 1;              // Shape letter
-        int  plateNum = Nz + 30;                            // Shape number
+        int  plateNum = Nz*mapsCountMult + 30;              // Shape number
 
         stringstream plateNameStream;
         plateNameStream << plateCh << "-" << plateNum;
-        plateName = plateNameStream.str();
+        string plateName = plateNameStream.str();
+#if 0
+        plateName.push_back(plateCh);
+
+        switch (mapsCountMult) {
+            case 1:
+                plateName = plateNameStream.str();
+                break;
+            case 2:
+            case 4:
+            {
+                int first = plateNum > 1 ? plateNum / mapsCountMult * mapsCountMult - 1 : 1;
+                plateName.append("-");
+
+                for (int i = 0; i < mapsCountMult; ++i) {
+                    plateName.append(to_string(first + i));
+                    if (i != mapsCountMult - 1)
+                        plateName.append(",");
+                }
+                break;
+            }
+        }
+#endif
 
         clog << "Shape of the 1M map: " << plateName << endl;
         fprintf(stderr,
                 "Shape border coordinates (lat/lon) %s:\n"
                 "   (%.6f, %.6f)   (%.6f, %.6f)\n"
                 "   (%.6f, %.6f)   (%.6f, %.6f)\n",
-                plateNameStream.str().c_str(),
+                plateName.c_str(),
                 top1m, left1m, top1m, right1m,
                 bottom1m, left1m, bottom1m, right1m);
 
@@ -457,7 +530,7 @@ int main(int argc, char **argv)
                              // more huge scales bases on 100k settings
                              // for 500k subbser, linear number is a letter 'А'-'Г' on Russian or
                              // 'A'-'D', like O-50-A
-        double plateWidthMin  = 360; // Shape width in minutes, 360 - for 1M map
+        double plateWidthMin  = 360 * mapsCountMult; // Shape width in minutes, 360 - for 1M map
         double plateHeightMin = 240; // Shape height in minutes, 240 - for 1M map
         int    plateWidthInSubplates = 1; // 1M shape width in subset scales,
                                           // for example, 1M map width of 500k maps is a 2
@@ -474,21 +547,21 @@ int main(int argc, char **argv)
         {
             // 100k subsets (50k, 25k) calculates based on superset (100k) settings
             plateWidthInSubplates = 12;
-            plateWidthMin         = 30;
+            plateWidthMin         = 30 * mapsCountMult;
             plateHeightMin        = 20;
             knownScale            = true;
         }
         else if (scale == "200k")
         {
             plateWidthInSubplates = 6;
-            plateWidthMin         = 60;
+            plateWidthMin         = 60 * mapsCountMult;
             plateHeightMin        = 40;
             knownScale            = true;
         }
         else if (scale == "500k")
         {
             plateWidthInSubplates = 2;
-            plateWidthMin         = 180;
+            plateWidthMin         = 180 * mapsCountMult;
             plateHeightMin        = 120;
             knownScale            = true;
         }
@@ -547,11 +620,11 @@ int main(int argc, char **argv)
             if (scale == "50k" || scale == "25k")
             {
                 char plate50kCh = get_subplate(geoLonCenter,
-                                              geoLatCenter,
-                                              subPlateTop,
-                                              subPlateLeft,
-                                              subPlateBottom,
-                                              subPlateRight);
+                                               geoLatCenter,
+                                               subPlateTop,
+                                               subPlateLeft,
+                                               subPlateBottom,
+                                               subPlateRight);
                 if (!plate50kCh)
                 {
                     cerr << "Incorrect page of 1:50000\n";
@@ -563,11 +636,11 @@ int main(int argc, char **argv)
                 if (scale == "25k")
                 {
                     char plate25kCh = get_subplate(geoLonCenter,
-                                                  geoLatCenter,
-                                                  subPlateTop,
-                                                  subPlateLeft,
-                                                  subPlateBottom,
-                                                  subPlateRight);
+                                                   geoLatCenter,
+                                                   subPlateTop,
+                                                   subPlateLeft,
+                                                   subPlateBottom,
+                                                   subPlateRight);
                     if (!plate25kCh)
                     {
                         cerr << "Incorrect page of 1:25000\n";
@@ -613,8 +686,9 @@ int main(int argc, char **argv)
                 }
 
                 // Recalculate coordinates to the raster pixels
-                geo_to_pixel_coordinate(geoTransform,
-                                     shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
+                //geo_to_pixel_coordinate(geoTransform,
+                //                     shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
+                geoTransform.coordinateToPixel(shapeBorderCoordinates[i].x, shapeBorderCoordinates[i].y, shapeBorderPixels[i].x, shapeBorderPixels[i].y);
 
                 // TODO: add processing for partial shapes: there is a lot of scanned maps with breaks
                 //       one shape to the seleveral ones. Some notes:
@@ -670,7 +744,7 @@ int main(int argc, char **argv)
 
         *cutline << "WKT,dummy\n" << "\"";
         stringstream cutlinePolygon;
-        
+
         cutlinePolygon << "POLYGON((";
 
         if (knownScale)
