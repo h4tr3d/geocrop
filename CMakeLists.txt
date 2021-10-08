@@ -4,7 +4,7 @@ project(GeoCrop)
 set(APPLICATION_NAME geocrop)
 
 # where to look first for cmake modules, before ${CMAKE_ROOT}/Modules/ is checked
-set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
+list(PREPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
 # Compiler-specific C++20 activation.
 set(CMAKE_CXX_STANDARD 20)
