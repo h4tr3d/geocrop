@@ -1,7 +1,21 @@
-cmake_minimum_required (VERSION 2.8)
+cmake_minimum_required (VERSION 3.21)
 project(GeoCrop)
 
 set(APPLICATION_NAME geocrop)
+
+# where to look first for cmake modules, before ${CMAKE_ROOT}/Modules/ is checked
+set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
+
+# Compiler-specific C++20 activation.
+set(CMAKE_CXX_STANDARD 20)
+#set(CMAKE_CXX_STANDARD_REQUIRED yes)
+
+# Warnings
+set (GEOCROP_WARNING_OPTIONS
+     $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
+       -Wall -Wextra>
+     $<$<CXX_COMPILER_ID:MSVC>:
+       /W4>)
 
 include_directories(.)
 
@@ -20,23 +34,6 @@ endif(WIN32)
 
 add_definitions(-D__STDC_CONSTANT_MACROS)
 
-# Compiler-specific C++11 activation.
-if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
-    execute_process(
-        COMMAND ${CMAKE_CXX_COMPILER} -dumpversion OUTPUT_VARIABLE GCC_VERSION)
-    if (NOT (GCC_VERSION VERSION_GREATER 4.7 OR GCC_VERSION VERSION_EQUAL 4.7))
-        message(FATAL_ERROR "${PROJECT_NAME} requires g++ 4.7 or greater.")
-    endif ()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -Wextra")
-elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
-    set(CMAKE_CXX_FLAGS "-std=c++11 ${CMAKE_CXX_FLAGS} -stdlib=libc++")
-else ()
-    message(WARNING "I can't detect your C++11 compiler.")
-endif ()
-
-# where to look first for cmake modules, before ${CMAKE_ROOT}/Modules/ is checked
-set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
-
 # Generate gitinfo
 if(EXISTS ${CMAKE_SOURCE_DIR}/.git/)
     execute_process(COMMAND git describe --tags
@@ -52,12 +49,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/.git/)
 endif()
 
 #find_package(Threads)
-#find_package(PkgConfig)
 
 find_package(GDAL REQUIRED)
-find_package(PROJ REQUIRED)
-
-include_directories(SYSTEM ${GDAL_INCLUDE_DIRS} ${PROJ_INCLUDE_DIRS})
+find_package(PROJ4 REQUIRED)
 
 add_executable(${APPLICATION_NAME} geocrop.cpp)
-target_link_libraries(${APPLICATION_NAME} ${GDAL_LIBRARIES} ${PROJ_LIBRARIES})
+target_link_libraries(${APPLICATION_NAME} PRIVATE GDAL::gdal PROJ4::proj)
+target_compile_options(${APPLICATION_NAME} PRIVATE ${GEOCROP_WARNING_OPTIONS})
