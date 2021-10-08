@@ -798,6 +798,8 @@ int main(int argc, char **argv)
             cutlinePolygon << shapeBorderCoordinates[2].x << " " << shapeBorderCoordinates[2].y;
         }
 
+        // Close Polygon to make Gdal happy
+        cutlinePolygon << "," << shapeBorderCoordinates[0].x << " " << shapeBorderCoordinates[0].y;
         cutlinePolygon << "))";
 
         *cutline << cutlinePolygon.str();
