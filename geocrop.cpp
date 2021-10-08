@@ -6,6 +6,7 @@
 #include <sstream>
 #include <fstream>
 #include <memory>
+#include <cassert>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -13,7 +14,7 @@
 
 #include <gdal_priv.h>
 #include <ogr_spatialref.h>
-#include <proj_api.h>
+#include <proj.h>
 
 #include "version.h"
 
@@ -218,6 +219,59 @@ struct Point
 typedef Point<double> PointReal;
 typedef Point<int>    PointInt;
 
+/** Adds a " +type=crs" suffix to a PROJ string (if it is a PROJ string) */
+static std::string pj_add_type_crs_if_needed(std::string_view str)
+{
+    std::string ret(str);
+    if( (str.starts_with("proj=") ||
+         str.starts_with("+proj=") ||
+         str.starts_with("+init=") ||
+         str.starts_with("+title=")) &&
+        str.find("type=crs") == std::string::npos )
+    {
+        ret += " +type=crs";
+    }
+    return ret;
+}
+
+class CrsInstance
+{
+public:
+    CrsInstance();
+    explicit CrsInstance(std::string_view definition);
+
+    bool isLatLong() const;
+    bool isLatFirst() const;
+    double toRadians() const;
+
+    std::string_view definition() const;
+
+    operator bool() const;
+    PJ* get() const;
+
+    void reset();
+    PJ* release();
+
+    CrsInstance getGeographicCrs() const;
+
+private:
+    static void deleter(PJ *ptr)
+    {
+        if (ptr)
+            proj_destroy(ptr);
+    }
+    using pj_ptr_t = std::unique_ptr<PJ, decltype(&deleter)>;
+
+    static pj_ptr_t wrap(PJ *pj);
+
+    pj_ptr_t m_crs;
+    std::string m_definition;
+
+    bool m_isLongLat = false;
+    bool m_isLatFirst = false;
+    double m_toRadians = 0.0;
+};
+
 //
 // http://www.gdal.org/gdal_tutorial_ru.html
 //
@@ -383,8 +437,7 @@ int main(int argc, char **argv)
 
         // Convert WKT projection representation to the PRIJ4 form
         OGRSpatialReference inSrs;
-        char *wktRef = (char *) dataset->GetProjectionRef();
-        inSrs.importFromWkt(&wktRef);
+        inSrs.importFromWkt(dataset->GetProjectionRef());
         char *proj4Ref;
         inSrs.exportToProj4(&proj4Ref);
         string inProj = proj4Ref;
@@ -392,36 +445,40 @@ int main(int argc, char **argv)
         clog << "PROJ4: " << inProj << endl;
 
         // Recalc metric coordinates to the LonLat for shape detection
-        double u = 0.0, v = 0.0;
-        projPJ pjSrc = 0;
-        projPJ pjTar = 0;
-
-        pjSrc = pj_init_plus(inProj.c_str());
+        CrsInstance pjSrc{inProj};
+        PJ *transform = nullptr;
 
         double geoLonCenter = geoXCenter;
         double geoLatCenter = geoYCenter;
 
-        if (!pj_is_latlong(pjSrc))
+        if (!pjSrc.isLatLong())
         {
-            pjTar = pj_latlong_from_proj(pjSrc);
+            auto pjTar = pjSrc.getGeographicCrs();
 
-            projPJ pjTmp = pj_latlong_from_proj(pjSrc);
-            clog << "PROJ4: "  << pj_get_def(pjTmp, 0) << endl;
+            clog << "PROJ: " << pjTar.definition() << endl;
 
-            if (pjSrc == 0 || pjTar == 0)
+            if (!pjSrc|| !pjTar)
             {
                 cerr << "Can't setup projection'\n";
                 return 1;
             }
 
-            u = geoXCenter;
-            v = geoYCenter;
-            pj_transform(pjSrc, pjTar, 1, 0, &u, &v, 0);
+            transform = proj_create_crs_to_crs_from_pj(PJ_DEFAULT_CTX,
+                                                       pjSrc.get(), pjTar.get(),
+                                                       nullptr, nullptr);
+            if (!transform) {
+                clog << "Can't create PROJ transformation\n";
+                return 1;
+            }
 
-            geoLonCenter = u * RAD_TO_DEG;
-            geoLatCenter = v * RAD_TO_DEG;
+            PJ_COORD coord{};
+            coord.xy.x = geoXCenter;
+            coord.xy.y = geoYCenter;
+            coord = proj_trans(transform, PJ_FWD, coord);
+            geoLonCenter = coord.uv.u;
+            geoLatCenter = coord.uv.v;
 
-            fprintf(stderr, "Shape center coordinates (alt/lon): (%.6f, %.6f)\n",
+            fprintf(stderr, "Shape center coordinates (lat/lon): (%.6f, %.6f)\n",
                    geoLatCenter, geoLonCenter);
         }
 
@@ -465,20 +522,18 @@ int main(int argc, char **argv)
 
         for (int i = 0; i < 4; ++i)
         {
-            if (pjTar)
+            if (transform)
             {
                 // At the LatLon representation, first is a latitude that is a Y. Second -
                 // longitude that is X. Before pass it to the pj_transform() we must put to
                 // correct places:
                 //    first - X (lon), second - Y (lat)
-                double u;
-                double v;
-                u = shapeBorderCoordinates[i].y * DEG_TO_RAD;
-                v = shapeBorderCoordinates[i].x * DEG_TO_RAD;
-                pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
-
-                shapeBorderCoordinates[i].x = u;
-                shapeBorderCoordinates[i].y = v;
+                PJ_COORD coord{};
+                coord.uv.u = shapeBorderCoordinates[i].y;
+                coord.uv.v = shapeBorderCoordinates[i].x;
+                coord = proj_trans(transform, PJ_INV, coord);
+                shapeBorderCoordinates[i].x = coord.xy.x;
+                shapeBorderCoordinates[i].y = coord.xy.y;
             }
 
             // Recalc coordinates to the pixels
@@ -671,18 +726,18 @@ int main(int argc, char **argv)
 
             for (int i = 0; i < 4; ++i)
             {
-                if (pjTar)
+                if (transform)
                 {
                     // At the LatLon representation, first is a latitude that is a Y. Second -
                     // longitude that is X. Before pass it to the pj_transform() we must put to
                     // correct places:
                     //    first - X (lon), second - Y (lat)
-                    double u = shapeBorderCoordinates[i].y * DEG_TO_RAD;
-                    double v = shapeBorderCoordinates[i].x * DEG_TO_RAD;
-                    pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
-
-                    shapeBorderCoordinates[i].x = u;
-                    shapeBorderCoordinates[i].y = v;
+                    PJ_COORD coord{};
+                    coord.uv.u = shapeBorderCoordinates[i].y;
+                    coord.uv.v = shapeBorderCoordinates[i].x;
+                    coord = proj_trans(transform, PJ_INV, coord);
+                    shapeBorderCoordinates[i].x = coord.xy.x;
+                    shapeBorderCoordinates[i].y = coord.xy.y;
                 }
 
                 // Recalculate coordinates to the raster pixels
@@ -765,11 +820,14 @@ int main(int argc, char **argv)
                 double u = lon;
                 double v = lat;
 
-                if (pjTar)
+                if (transform)
                 {
-                    u *= DEG_TO_RAD;
-                    v *= DEG_TO_RAD;
-                    pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
+                    PJ_COORD coord{};
+                    coord.uv.u = u;
+                    coord.uv.v = v;
+                    coord = proj_trans(transform, PJ_INV, coord);
+                    u = coord.uv.u;
+                    v = coord.uv.v;
                 }
 
                 cutlinePolygon << u << " " << v << ",";
@@ -785,11 +843,14 @@ int main(int argc, char **argv)
                 double u = lon;
                 double v = lat;
 
-                if (pjTar)
+                if (transform)
                 {
-                    u *= DEG_TO_RAD;
-                    v *= DEG_TO_RAD;
-                    pj_transform(pjTar, pjSrc, 1, 0, &u, &v, 0);
+                    PJ_COORD coord{};
+                    coord.uv.u = u;
+                    coord.uv.v = v;
+                    coord = proj_trans(transform, PJ_INV, coord);
+                    u = coord.uv.u;
+                    v = coord.uv.v;
                 }
 
                 cutlinePolygon << u << " " << v << ",";
@@ -859,3 +920,146 @@ int main(int argc, char **argv)
     return 0;
 }
 
+
+CrsInstance::CrsInstance()
+    : m_crs(nullptr, deleter)
+{
+}
+
+CrsInstance::CrsInstance(std::string_view definition)
+    : CrsInstance()
+{
+    m_definition = definition;
+    m_crs.reset(proj_create(PJ_DEFAULT_CTX,
+                            pj_add_type_crs_if_needed(definition).c_str()));
+    if (m_crs)
+        // can be checked via `operator bool()`
+        return;
+
+    auto type = proj_get_type(m_crs.get());
+    if (type == PJ_TYPE_BOUND_CRS) {
+        m_crs.reset(proj_get_source_crs(PJ_DEFAULT_CTX, m_crs.get()));
+        type = proj_get_type(m_crs.get());
+    }
+
+    if (type == PJ_TYPE_GEOGRAPHIC_2D_CRS ||
+        type == PJ_TYPE_GEOGRAPHIC_3D_CRS ||
+        type == PJ_TYPE_GEODETIC_CRS) {
+        pj_ptr_t cs = {proj_crs_get_coordinate_system(PJ_DEFAULT_CTX, m_crs.get()), deleter};
+        assert(cs);
+
+        const char *axisName = "";
+        proj_cs_get_axis_info(PJ_DEFAULT_CTX, cs.get(), 0,
+                              &axisName, // name
+                              nullptr,   // abbrev
+                              nullptr,   // direction
+                              &m_toRadians,
+                              nullptr,   // unit name
+                              nullptr,   // unit authority
+                              nullptr    // unit code
+                              );
+
+        std::clog << __PRETTY_FUNCTION__ << ": axisName=" << axisName << '\n';
+
+        auto axisNameView = std::string_view(axisName);
+        m_isLatFirst = axisNameView.find("latitude") != std::string_view::npos;
+        m_isLongLat = m_isLatFirst || axisNameView.find("longitude") != std::string_view::npos;
+    }
+}
+
+bool CrsInstance::isLatLong() const
+{
+    return m_isLongLat;
+}
+
+bool CrsInstance::isLatFirst() const
+{
+    return m_isLatFirst;
+}
+
+double CrsInstance::toRadians() const
+{
+    return m_toRadians;
+}
+
+std::string_view CrsInstance::definition() const
+{
+    return m_definition;
+}
+
+CrsInstance::operator bool() const
+{
+    return bool(m_crs);
+}
+
+PJ *CrsInstance::get() const
+{
+    return m_crs.get();
+}
+
+void CrsInstance::reset()
+{
+    if (m_crs)
+        m_crs.reset();
+}
+
+PJ *CrsInstance::release()
+{
+    return m_crs.release();
+}
+
+CrsInstance CrsInstance::getGeographicCrs() const
+{
+    double toRadians = 0.0;
+    bool isLatFirst = false;
+
+    auto srcType = proj_get_type(m_crs.get());
+    if (srcType != PJ_TYPE_PROJECTED_CRS)
+        return {};
+
+    auto base = wrap(proj_get_source_crs(PJ_DEFAULT_CTX, m_crs.get()));
+    assert(base);
+
+    auto baseType = proj_get_type(base.get());
+    if (baseType != PJ_TYPE_GEOGRAPHIC_2D_CRS &&
+        baseType != PJ_TYPE_GEOGRAPHIC_3D_CRS) {
+        return {};
+    }
+
+    auto cs = wrap(proj_crs_get_coordinate_system(PJ_DEFAULT_CTX, base.get()));
+    assert(cs);
+
+    const char *axisName = "";
+    proj_cs_get_axis_info(nullptr, cs.get(), 0,
+                          &axisName, // name,
+                          nullptr,   // abbrev
+                          nullptr,   // direction
+                          &toRadians,
+                          nullptr, // unit name
+                          nullptr, // unit authority
+                          nullptr  // unit code
+                          );
+
+    std::clog << __PRETTY_FUNCTION__ << ": axisName=" << axisName << '\n';
+
+    isLatFirst = std::string_view(axisName).find("latitude") != std::string_view::npos;
+
+    auto retCStr = proj_as_proj_string(PJ_DEFAULT_CTX, base.get(), PJ_PROJ_5, nullptr);
+
+    CrsInstance result;
+
+    result.m_crs = std::move(base);
+    result.m_definition = retCStr ? retCStr : "";
+    result.m_toRadians = toRadians;
+    result.m_isLatFirst = isLatFirst;
+    result.m_isLongLat = true;
+
+    std::clog << __PRETTY_FUNCTION__ << ": result.m_definition=" << result.m_definition << '\n';
+
+    return result;
+}
+
+CrsInstance::pj_ptr_t CrsInstance::wrap(PJ *pj)
+{
+    return {pj, deleter};
+}
